@@ -1,0 +1,71 @@
+<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MT シフト表</title><style>
+*{box-sizing:border-box}body{margin:0;background:#f2f5f4;color:#183831;font:16px system-ui,sans-serif}header{background:#173e35;color:white;padding:18px 5%;font-weight:700;letter-spacing:.08em}main{max-width:1450px;margin:auto;padding:36px 4%}h1{margin:0;font-size:clamp(24px,3vw,38px)}.bar,.fields,footer{display:flex;align-items:center;gap:18px;flex-wrap:wrap}.bar{justify-content:space-between;margin-bottom:22px}.fields{margin-bottom:20px}label{font-size:14px;font-weight:600;display:grid;gap:5px}input,textarea,button{font:inherit;border:1px solid #acbbb5;border-radius:7px;padding:9px;background:white;color:inherit}button{cursor:pointer}.primary{background:#19664f;border-color:#19664f;color:white;font-weight:700;padding:12px 20px}.paper{background:white;overflow:auto;border:1px solid #c6d1cd;border-radius:10px;padding:12px}svg{display:block;width:100%;min-width:790px;height:auto}g[role=button]{cursor:pointer}g[role=button]:hover rect,g[role=button]:focus rect{fill:#e5f3ed}p{color:#526b63}dialog{color:inherit;border:0;border-radius:14px;padding:24px;width:min(420px,92vw)}dialog::backdrop{background:#102b2588}textarea{width:100%;resize:vertical}dialog label{margin:16px 0}footer{justify-content:flex-end}input[type=checkbox]{width:18px;height:18px;vertical-align:middle}#status{font-size:14px}
+</style><header>▦　MT シフト管理</header><main><div class="bar"><h1>シフト表の編集</h1><button class="primary" id="download">PNG画像を保存</button></div><div class="fields"><label>表のタイトル<input id="titleField" maxlength="60"></label><label>開始日<input id="start" type="date"></label><span id="status" role="status"></span></div><div class="paper" id="paper"></div><p>マスをタップすると、勤務時間・担当者・備考を編集できます。</p></main><dialog id="editor"><h2 id="heading"></h2><label>シフト内容<textarea id="entry" rows="6" maxlength="450"></textarea></label><label>このマスの文字色<input type="color" id="ink" style="width:72px;height:40px;padding:3px"></label><label style="display:block"><input type="checkbox" id="closed"> 勤務なし（斜線）</label><footer><button id="cancel">キャンセル</button><button class="primary" id="apply">反映する</button></footer></dialog><script>
+const by=id=>document.getElementById(id), rows=['日勤','夕勤','夜勤','備考'], weekdays='日月火水木金土';
+const sunday = new Date();
+sunday.setDate(sunday.getDate() - sunday.getDay());
+const weekStart = [sunday.getFullYear(), String(sunday.getMonth()+1).padStart(2,'0'), String(sunday.getDate()).padStart(2,'0')].join('-');
+let data = {
+  title: 'MT シフト表',
+  date: weekStart,
+  grid: rows.map(() => Array(6).fill('')),
+  off: rows.map(() => Array(6).fill(false))
+};
+try{data=JSON.parse(localStorage.getItem('mt-sheet-v1'))||data}catch{}
+const svgNS='http://www.w3.org/2000/svg',measure=document.createElement('canvas').getContext('2d');
+function node(tag,attrs,parent){let n=document.createElementNS(svgNS,tag);for(let k in attrs)n.setAttribute(k,attrs[k]);parent.append(n);return n}
+function dateAt(i){let d=new Date(data.date+'T12:00:00');d.setDate(d.getDate()+i);return d}
+const defaultInk = '#171b19';
+data.colors ??= data.grid.map(row => row.map(() => defaultInk));
+
+function normalizeTimes(value) {
+  const digit = '[0-9０-９]';
+  const clock = digit + '{1,2}(?:[:：]' + digit + '{2})?';
+  const pattern = new RegExp('^([　 \\t]*)(' + clock + ')?[　 \\t]*[~～〜－–−-][　 \\t]*(' + clock + ')?(?![0-9０-９:：])', 'u');
+  function formatClock(time) {
+    if (!time) return '';
+    const [hour, minute] = time.normalize('NFKC').split(':');
+    return hour.padStart(2, '0') + (minute === undefined ? '' : ':' + minute);
+  }
+  return value.split('\n').map(line => line.replace(pattern, (match, indent, from, to) =>
+    from || to ? indent + formatClock(from) + '〜' + formatClock(to) : match
+  )).join('\n');
+}
+data.grid = data.grid.map((row, r) => r === 3 ? row : row.map(normalizeTimes));
+function drawEntry(parent, x, y, line, color, shiftRow) {
+  const timed = shiftRow && /^\s*(\d{2}(?::\d{2})?〜(?:\d{2}(?::\d{2})?)?|〜\d{2}(?::\d{2})?)[　 \t]*(.*)$/.exec(line);
+  if (!timed) {
+    node('text', {x:x+94.5, y, 'text-anchor':'middle', 'dominant-baseline':'central', 'font-size':21, fill:color}, parent).textContent = line;
+    return;
+  }
+  const [, time, name] = timed;
+  const size = time.includes(':') ? 15 : 20;
+  const endOnly = time.startsWith('〜');
+  measure.font = size + 'px monospace';
+  const fullRange = time.includes(':') ? '00:00〜00:00' : '00〜00';
+  const timeX = x + 9 + (endOnly ? measure.measureText(fullRange).width : 0);
+  const label = node('text', {x:timeX, y, 'text-anchor':endOnly ? 'end' : 'start', 'dominant-baseline':'central', 'font-family':'monospace', 'font-size':size, fill:color}, parent);
+  label.textContent = time;
+  if (name) {
+    const offset = time.includes(':') ? 113 : 94;
+    measure.font = '21px sans-serif';
+    const fontSize = Math.min(21, 21*(180-offset)/Math.max(1,measure.measureText(name).width));
+    node('text', {x:x+offset, y, 'dominant-baseline':'central', 'font-size':fontSize, fill:color}, parent).textContent = name;
+  }
+}
+let selected;
+function edit(r,c){selected=[r,c];by("ink").value=data.colors[r][c];let d=dateAt(c);by('heading').textContent=(d.getMonth()+1)+'月'+d.getDate()+'日・'+rows[r];by('entry').value=data.grid[r][c];by('closed').checked=data.off[r][c];by('entry').disabled=by('closed').checked;by('editor').showModal()}
+function splitLines(value){measure.font='21px sans-serif';return value.split('\n').flatMap(line=>{let parts=[],part='';for(let ch of line){if(measure.measureText(part+ch).width>170){parts.push(part);part=''}part+=ch}return [...parts,part]})}
+function render(){let paper=by('paper');paper.replaceChildren();let svg=node('svg',{xmlns:svgNS,'font-family':'sans-serif'},paper);
+let box=(x,y,w,h,fill,p=svg)=>node('rect',{x,y,width:w,height:h,fill,stroke:'#999','stroke-width':0.8},p);
+function txt(x,y,value,size,p=svg,color='#171b19',weight=400){node('text',{x,y,'text-anchor':'middle','dominant-baseline':'central','font-size':size,fill:color,'font-weight':weight},p).textContent=value}
+function line(x,y,x2,y2){node('line',{x1:x,y1:y,x2,y2,stroke:'#555','pointer-events':'none'},svg)}
+let lines=data.grid.map(row=>row.map(splitLines)), heights=lines.map((row,r)=>Math.max(r<2?150:122,...row.map((a,c)=>data.off[r][c]?0:a.length*28+16)));
+let H=112+heights.reduce((a,b)=>a+b,0)+14;svg.setAttribute('viewBox','0 0 1258 '+H);svg.setAttribute('width',1258);svg.setAttribute('height',H);box(0,0,1258,H,'white').removeAttribute('stroke');measure.font='bold 30px sans-serif';txt(629,28,data.title,Math.min(30,30*1220/Math.max(1,measure.measureText(data.title).width)),svg,'#121614',700);
+box(12,54,100,58,'#c5c8c6');line(12,54,112,112);
+for(let c=0;c<6;c++){let d=dateAt(c),x=112+c*189;box(x,54,189,58,'#c5c8c6');txt(x+94.5,68,weekdays[d.getDay()]+'曜',17,svg,d.getDay()===0?'#ba3e30':'#171b19',700);txt(x+94.5,93,d.getDate(),27)}
+let y=112;rows.forEach((name,r)=>{let h=heights[r];box(12,y,100,h,'#e0e2e1');[...name].forEach((ch,i)=>txt(62,y+h/2-20+i*40,ch,29));for(let c=0;c<6;c++){let x=112+c*189,g=node('g',{role:'button',tabindex:0,'aria-label':dateAt(c).getDate()+'日 '+name+'を編集'},svg);box(x,y,189,h,'white',g);g.onclick=()=>edit(r,c);g.onkeydown=e=>{if(['Enter',' '].includes(e.key)){e.preventDefault();edit(r,c)}};if(data.off[r][c]){if(c===0&&data.off[0][0]&&data.off[1][0]&&r<2){if(r===1)line(x,112,x+189,y+h)}else line(x,y,x+189,y+h)}else{let arr=lines[r][c];arr.forEach((s,i)=>drawEntry(g,x,y+h/2+(i-(arr.length-1)/2)*28,s,data.colors[r][c],r<3))}}y+=h})}
+function save(){render();try{localStorage.setItem('mt-sheet-v1',JSON.stringify(data));by('status').textContent='このブラウザに保存済み'}catch{by('status').textContent='ブラウザに保存できません。画像を保存してください。'}}
+by('titleField').value=data.title;by('start').value=data.date;by('titleField').oninput=e=>{data.title=e.target.value;save()};by('start').onchange=e=>{if(e.target.value){data.date=e.target.value;save()}else e.target.value=data.date};by('closed').onchange=e=>by('entry').disabled=e.target.checked;by('cancel').onclick=()=>by('editor').close();by('apply').onclick=()=>{let [r,c]=selected;data.grid[r][c]=r===3?by('entry').value:normalizeTimes(by('entry').value);data.colors[r][c]=by('ink').value;data.off[r][c]=by('closed').checked;save();by('editor').close()};
+by('download').onclick=async()=>{let svg=document.querySelector('svg'),url=URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)],{type:'image/svg+xml;charset=utf-8'}));try{let img=new Image();img.src=url;await img.decode();let canvas=document.createElement('canvas');canvas.width=img.width*2;canvas.height=img.height*2;canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);let blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));let link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=(data.title||'シフト表')+'_'+data.date+'.png';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(link.href),60000);by('status').textContent='PNG画像を書き出しました'}catch{by('status').textContent='画像を保存できませんでした。もう一度お試しください。'}finally{URL.revokeObjectURL(url)}};render()
+</script></html>
